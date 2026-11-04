@@ -301,10 +301,10 @@ private:
 	DTA_FileTableRec* dtaFileRecords;
 	//BlockBuffer blockBuffer;
 	DataBuffer blockBuffer;
+		
 	///////////////////////
 	////   FUNCTIONS   ////
 	///////////////////////
-
 	inline void Decrypt(void* pData, uint32_t length);
 	uint64_t FindKey(void* encryptedData, uint64_t fileSize);
 	static bool WriteToFile(void*, uint32_t, std::string&, std::string);
