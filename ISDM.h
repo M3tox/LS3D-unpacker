@@ -11,8 +11,7 @@
 // commctrl only needed if you deal with windows GUI
 #include "commctrl.h"
 
-#define KEYCOUNT 15
-
+#define MAXTRIES 100000
 
 class ISDM
 {
@@ -112,70 +111,6 @@ public:
 
 private:
 
-	///////////////////////
-	////   CONSTANTS   ////
-	///////////////////////
-
-	// the names shown here are just for reference and are not being matched
-	// those will be shown in the title within the window
-	const char* origFileNames[KEYCOUNT]
-	{
-		{"Maps"},
-		{"Maps_C"},
-		{"Maps_U"},
-		{"Missions"},
-		{"Models"},
-		{"Others"},
-		{"Sounds"},
-		{"Scripts"},
-		{"SabreSquadron"},	// ISD1
-		{"Patch"},			// ISD1
-		{"LangEnglish"},	// ISD1 !!!
-		// DEMO FILES
-		{"Demo SP data"},
-		{"Demo MP data"},
-		{"Demo Sabre Squadron data"},
-		{"PatchX01"}
-	};
-
-	const uint32_t fileIndentifiers[KEYCOUNT]{
-		0xB438AB00,
-		0xB038DC00,
-		0xB038DD00,
-		0x7654A100,
-		0x5D804E00,
-		0xEA859B00,
-		0x4FE84300,
-		0x0AB4EB00,
-		0xA0A08600,
-		0x5D805600,
-		0xA0A0A600,	//A600
-		0x5D804D00,
-		0x5D807600,
-		0x5D807300,
-		0xA0A0A000
-	};
-
-	// decryption keys
-	const uint64_t keys[KEYCOUNT]{
-		0xf26527fab438d0a5,
-		0xe26520fab038d0a0,
-		0xf26520fab038d1a1,
-		0x22bcda987654a3f0,
-		0x10acb2525d805259,
-		0x65f7ab23ea85902a,
-		0x8d2965ca4fe85106,
-		0xcf7612980ab4e72d,
-		0xA0A0A0A0A0A0A0A1,	// A0A0A0F1?
-		0x10acb2525d805270,
-		0xa0a0a0a0a0a0a0a0,
-		// DEMO FILES
-		0x10ACB2525D8052A0,
-		0x10ACB2525D8052A0,
-		0x10ACB2525D8052A0,
-		0xa0a0a0a0a0a0a0a2
-	};
-
 	// used for wave file decompression
 	const uint16_t WAV_DELTAS[896]
 	{
@@ -270,26 +205,28 @@ private:
 
 
 	// default ISD0 header
+	// like this in file, but 80 byte big ingame
 	struct DTA_FileHeader {
-		uint32_t        extra1;			// compressed file size in archive, including header
-		uint32_t        extra2;			// unknown, but it varies between 31 and 33, mostly 32 though
-		uint64_t        timeStamp;		// FILETIME format
-		uint32_t        fileSize;		// file size
-		uint32_t        compBlocks;		// Number of compressed blocks
-		uint8_t		FullFileNameLength;	// full name with path
-		uint8_t		flags[7];		// flags
+		uint32_t           compFileSize;// compressed file size in archive, including header
+		uint32_t           extra2;		// unknown, but it varies between 31 and 33
+		uint64_t           timeStamp;	// FILETIME format
+		uint32_t           fileSize;	// file size
+		uint32_t           compBlocks;	// Number of compressed blocks
+		uint8_t			   FullFileNameLength;	// full name with path
+		uint8_t			   flags[7];	// flags
 	};
 
 	// slightly differend ISD1 header
 	struct DTA_FileHeaderISD1 {
-		uint32_t extra1;		// compressed file size in archive, including header
-		uint32_t extra2;		// unknown, but it varies between 31 and 33, mostly 32 though
+		uint32_t compFileSize;	// compressed file size in archive, including header
+		uint32_t extra2;		// unknown, but it varies between 31 and 33
 		uint64_t timeStamp;		// FILETIME
 		uint32_t fileSize;		// Decompressed size
-		uint32_t compBlocks;		// Nums of compressed block for current file data
+		uint32_t compBlocks;	// Nums of compressed block for current file data
 		uint32_t extra3;		// unknown
+		//uint8_t  extra4;		// unknown
 		uint8_t  FullFileNameLength;
-		uint8_t  flags[3];		// flags
+		uint8_t  flags[3];		// flags, first flag is always €
 	};
 
 	// table entry
@@ -353,18 +290,21 @@ private:
 	std::ifstream dtaFile;
 	int32_t errStatus{ 0 };
 	bool bISD1;
-	int8_t keySelector{ -1 };
+	uint64_t keyUsed;
+	std::string fileName;
 
 	DTA_ArchiveHeader ArchiveHeader;
 	WavHeader wavHeader;
 	bool wavHeaderSet = false;
 	DTA_FileTableRec* dtaFileRecords;
+	//BlockBuffer blockBuffer;
 	DataBuffer blockBuffer;
 	///////////////////////
 	////   FUNCTIONS   ////
 	///////////////////////
 
 	inline void Decrypt(void* pData, uint32_t length);
+	uint64_t FindKey(void* encryptedData, uint64_t fileSize);
 	static bool WriteToFile(void*, uint32_t, std::string&, std::string);
 
 	uint8_t* decompressDPCM(const uint16_t* delta, uint8_t* dest, const uint8_t* BlockSource, uint32_t blockSize);
