@@ -153,7 +153,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			case SELECTFILE:
 			{
 				
-				std::string filePath(OpenFile(hWnd, "HD2 DTA file (*.dta)\0*.dta\0"));
+				std::string filePath(OpenFile(hWnd, "LS3D DTA file (*.dta)\0*.dta\0"));
 				if (!filePath.empty()) {
 					
 
