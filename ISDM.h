@@ -11,6 +11,8 @@
 // commctrl only needed if you deal with windows GUI
 #include "commctrl.h"
 
+// this defines the max tries the keyfinder will attempt, before giving up.
+// as long as your .dta archive has less than 100k files, you are good (max I saw was about 30k)
 #define MAXTRIES 100000
 
 class ISDM
