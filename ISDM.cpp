@@ -11,6 +11,8 @@ ISDM::ISDM(const std::string& fullPath) {
 		errStatus = 3;
 		return;
 	}
+	std::size_t pos = fullPath.rfind("\\");
+	fileName.assign(fullPath.substr(pos+1, fullPath.length()- pos-1));
 
 	// read first 4 bytes into buffer
 	char regBuffer[4];
@@ -36,37 +38,26 @@ ISDM::ISDM(const std::string& fullPath) {
 	// read archive header
 	dtaFile.read(reinterpret_cast<char*>(&ArchiveHeader), sizeof(DTA_ArchiveHeader));
 
-	// Check which file it is:
-	// use undecrypted file size as signature
-	for (uint8_t sel = 0; sel < KEYCOUNT; sel++) {
-		if (fileIndentifiers[sel] == (ArchiveHeader.ahNumOfFiles & 0xFFFFFF00)) {
-			keySelector = sel;
-			break;
-		}
-	}
+	std::ios::pos_type lastPos = dtaFile.tellg();
+	dtaFile.seekg(0, std::ios::end);
+	uint64_t fileSize = dtaFile.tellg();
+	dtaFile.seekg(lastPos);
 
-	// little hotfix, not very elegant but it works.
-	// the english version of LangEnglish does not match with identifier because it has less files than the german one.
-	// if the key is still not found, it will check if it might be this one as well if its not -> Error
-	if (keySelector == -1) {
-		if (0xA0A0B170 == ArchiveHeader.ahNumOfFiles)
-			keySelector = 10;
-		else {
-			errStatus = 2;
-			return;
-		}
+	keyUsed = FindKey(reinterpret_cast<char*>(&ArchiveHeader), fileSize);
+
+	if (keyUsed == 0xFFFFFFFFFFFFFFFF) {
+		dtaFile.close();
+		errStatus = 6;
+		return;
 	}
 
 	Decrypt(&ArchiveHeader, sizeof(DTA_ArchiveHeader));
 	// check file size and make sure its bigger than
 	// the given table offset position
-	std::ios::pos_type lastPos = dtaFile.tellg();
-	dtaFile.seekg(0, std::ios::end);
-	if (ArchiveHeader.ahFileTableOffset > dtaFile.tellg()) {
+	if (ArchiveHeader.ahFileTableOffset > fileSize) {
 		errStatus = 5;
 		return;
 	}
-	dtaFile.seekg(lastPos);
 
 	// jump to table records
 	dtaFile.seekg(ArchiveHeader.ahFileTableOffset);
@@ -191,24 +182,24 @@ uint16_t ISDM::CreateFileContent(uint32_t FileID, DataBuffer* fileBuffer) {
 				Decrypt(blockBuffer.GetContent(), SizeOfBlock);
 
 			// first element of each block contains the block type
-			uint8_t blockType = *(blockBuffer.GetContent());
+			uint8_t blockType = *blockBuffer.GetContent();
 
-
+			void* test = blockBuffer.GetContent();
 			switch (blockType) {
 			case BLOCK_UNCOMPRESSED:
 				// just copy to file buffer if no compression is given
-				memcpy(bufferPtr, blockBuffer.GetContent()+1, SizeOfBlock - 1);
-				bufferPtr += SizeOfBlock-1;
+				memcpy(bufferPtr, blockBuffer.GetContent() + 1, SizeOfBlock - 1);
+				bufferPtr += SizeOfBlock - 1;
 				break;
 
 			case BLOCK_LZSS_RLE:
 				bufferPtr = decompressLZSS(bufferPtr, blockBuffer.GetContent() + 1, SizeOfBlock - 1);
 				break;
-			default: 
+			default:
 				// expect wave files
 				bufferPtr = decompressDPCM(&WAV_DELTAS[128 * ((blockType / 4) - 2)], bufferPtr, blockBuffer.GetContent() + 1, SizeOfBlock - 1);
-				break;
 			}
+
 		}
 	}
 
@@ -225,7 +216,7 @@ void ISDM::Decrypt(void* pData, uint32_t length) {
 	// I found this function here and like it: https://hd2.fandom.com/wiki/DTA
 	// It is simple and short. I only did little modifications to it.
 
-	uint64_t key = keys[keySelector];
+	uint64_t key = keyUsed;
 	// divide given bytes to ecrypt by eight
 	// for those, 64bit key can decrypt directly
 	uint32_t nLongLong = length / 8;
@@ -233,7 +224,7 @@ void ISDM::Decrypt(void* pData, uint32_t length) {
 	// get leftovers with modulo, those will be decrypted in the end
 	uint32_t nBytes = length % 8;
 
-	// decrypt everything which within 8byte range
+	// decrypt everything within 8byte range
 	uint64_t* pLongLong = reinterpret_cast<uint64_t*>(pData);
 	for (uint32_t i = 0; i < nLongLong; ++i)
 		pLongLong[i] = ~((~pLongLong[i]) ^ key);
@@ -245,6 +236,34 @@ void ISDM::Decrypt(void* pData, uint32_t length) {
 		for (uint32_t i = 0; i < nBytes; ++i)
 			pByte[i] = ~((~pByte[i]) ^ pKey[i]);
 	}
+}
+
+uint64_t ISDM::FindKey(void* encryptedData, uint64_t fileSize)
+{
+	uint32_t guesses[3];
+
+	uint8_t keyBytes[12];
+
+	uint32_t i = 1;
+	for (; i <= MAXTRIES; i++) {
+		guesses[0] = i;
+		guesses[2] = i * 28;
+		guesses[1] = fileSize - guesses[2];
+		for (uint32_t j = 0; j < 12; ++j) {
+			keyBytes[j] = ((uint8_t*)encryptedData)[j] ^ ((uint8_t*)guesses)[j];
+		}
+		// check if 1. and 3. integer are the same. They MUST be, if this is the actual key, its a repeating pattern
+		if (*((uint32_t*)keyBytes) == *(((uint32_t*)keyBytes) + 2)) {
+			// fitting key found
+			break;
+		}
+	}
+
+	// check if key was found
+	if (i == MAXTRIES) return 0xFFFFFFFFFFFFFFFF;
+
+	// key found, return it
+	return *((uint64_t*)keyBytes);
 }
 
 bool ISDM::WriteToFile(void* fileContent, uint32_t sizeBytes, std::string& FileName_str, std::string UserPath = "") {
@@ -261,12 +280,6 @@ bool ISDM::WriteToFile(void* fileContent, uint32_t sizeBytes, std::string& FileN
 		else {
 			// it is not, write file directly
 			UserPath.append(FileName_str);
-
-			// we are in windows API anyway, so I commented the old code from std library out
-			// and use the functions provided by windows
-			//std::ofstream extractedFile(UserPath, std::ios::binary);
-			//extractedFile.write((char*)fileContent, sizeBytes);
-			//extractedFile.close();
 			
 			DWORD written;
 			HANDLE hFile = CreateFileA(UserPath.c_str(), GENERIC_ALL, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -290,7 +303,7 @@ bool ISDM::WriteToFile(void* fileContent, uint32_t sizeBytes, std::string& FileN
 uint8_t* ISDM::decompressLZSS(uint8_t* dest, const uint8_t* BlockSource, uint32_t blockSize) {
 	// based on HDmaster's research and source but without using vectors
 	// instead, it is writing directly into the file buffer
-	// I also optimized it a bit by using memset and less "for loops"
+	// I also optimized it a bit by using memset and less for loops
 
 	uint32_t BlockPosition{ 0 };
 
@@ -362,7 +375,6 @@ uint8_t* ISDM::decompressLZSS(uint8_t* dest, const uint8_t* BlockSource, uint32_
 	return dest;
 }
 
-
 // decompression DPCM for wave files
 uint8_t* ISDM::decompressDPCM(const uint16_t* delta, uint8_t* dest, const uint8_t* BlockSource, uint32_t blockSize) {
 
@@ -373,6 +385,12 @@ uint8_t* ISDM::decompressDPCM(const uint16_t* delta, uint8_t* dest, const uint8_
 		memcpy((char *)&wavHeader, BlockSource, sizeof(wavHeader));
 		pos += sizeof(wavHeader);
 		
+		char tempbuf[4];
+		memcpy(tempbuf, &wavHeader, 4);
+		if (!bISD1 && wavHeaderSet == false && memcmp(tempbuf, "RIFF", 4)) {
+			// older Mafia archives have this part encrypted.
+			Decrypt(&wavHeader, sizeof(wavHeader));
+		}
 		memcpy(dest, &wavHeader, sizeof(wavHeader));
 		dest += sizeof(wavHeader);
 		wavHeaderSet = true;
@@ -566,13 +584,17 @@ void ISDM::WriteFileHeaders(const char* fileName) {
 			FileNameBuffer[FileHeader.FullFileNameLength] = '\0';
 
 			HeadersFile << "File index:              " << i << '\n';
-			HeadersFile << "Unknown value 1:         " << FileHeader.extra1 << '\n';
+			HeadersFile << "Compress file size:      " << FileHeader.compFileSize << '\n';
 			HeadersFile << "Unknown value 2:         " << FileHeader.extra2 << '\n';
 			HeadersFile << "Time stamp as FILETIME:  " << FileHeader.timeStamp << '\n';
 			HeadersFile << "File size in bytes:      " << FileHeader.fileSize << '\n';
 			HeadersFile << "Amount of File Blocks:   " << FileHeader.compBlocks << '\n';
 			HeadersFile << "Unknown value 3:         " << FileHeader.extra3 << '\n';
 			HeadersFile << "File name length:        " << (int)FileHeader.FullFileNameLength << '\n';
+			HeadersFile << "Flag 1:                  " << FileHeader.flags[0] << '\n';
+			//HeadersFile << "Flag 2:                  " << (int)FileHeader.flags[1] << '\n';
+			//HeadersFile << "Flag 3:                  " << (int)FileHeader.flags[2] << '\n';
+			HeadersFile << "Flags 2-3:               " << *(short*)((FileHeader.flags + 1)) << '\n';
 			HeadersFile << "Full file Name:          ";
 			HeadersFile << FileNameBuffer;
 			HeadersFile << '\n';
@@ -590,7 +612,7 @@ void ISDM::WriteFileHeaders(const char* fileName) {
 			FileNameBuffer[FileHeader.FullFileNameLength] = '\0';
 
 			HeadersFile << "File index:              " << i << '\n';
-			HeadersFile << "Unknown value 1:         " << FileHeader.extra1 << '\n';
+			HeadersFile << "Compress file size:      " << FileHeader.compFileSize << '\n';
 			HeadersFile << "Unknown value 2:         " << FileHeader.extra2 << '\n';
 			HeadersFile << "Time stamp as FILETIME:  " << FileHeader.timeStamp << '\n';
 			HeadersFile << "File size in bytes:      " << FileHeader.fileSize << '\n';
@@ -644,7 +666,7 @@ void ISDM::CloseFile() {
 }
 
 const char* ISDM::GetFileName() {
-	return origFileNames[keySelector];
+	return fileName.c_str();
 }
 
 const int32_t ISDM::GetFileIndexByHint(const char* NameHint, uint8_t strSize) {
@@ -707,6 +729,9 @@ uint16_t ISDM::GetLastError(char* err) {
 	case 5:
 		memcpy(err, "File decryption failed! Encrypted data not reasonable.", 55);
 		break;
+	case 6:
+		memcpy(err, "Decryption key not found.", 26);
+		break;
 	default:
 		memcpy(err, "Unknown Error occured!", 23);
 		break;
@@ -714,3 +739,4 @@ uint16_t ISDM::GetLastError(char* err) {
 
 	return errStatus;
 }
+
